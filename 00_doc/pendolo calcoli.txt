@@ -1,0 +1,22 @@
+
+Periodo rotazione terra
+23 ore 56 minuti 4 secondi
+= 23.934444444444445 ore
+= 1436.0666666666666 minuti
+= 86164 secondi
+
+Roma Campidoglio 41,89332082644452; 12,482943325794551
+
+Periodo pendolo di Foucault a Roma = 23 ore 56 minuti 4 secondi / sen 41,89332082644452
+
+sen 41,89332082644452 = 0,66774578387949357243858772137521
+
+35.84 hours
+35 hours 50 minutes 37 seconds
+2150.616666666667 minutes
+129037 seconds
+
+Additional conversions:
+1 day 11 hours 50 minutes 37 seconds
+2151 minutes
+1.493 days
