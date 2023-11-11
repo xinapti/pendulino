@@ -6,3 +6,4 @@ Open file .ino
 To Download select:
 - Board: Arduino Nano
 - Processor type: ATmega 328
+
