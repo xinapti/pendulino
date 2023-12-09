@@ -7,8 +7,8 @@
 
 #define errorRet ((u_int16_t)-1) // Variable is unsigned, so the result will be 65535
 
-#define modAdd(a, b, M) ((a + b) % M)
-#define modSub(a, b, M) (((a - b) + M) % M)
+#define modAdd(a, b, M) (((int)a + (int)b) % (int)M)
+#define modSub(a, b, M) ((((int)a - (int)b) + (int)M) % (int)M)
 
 //// General Cast
 //#define M_To(T, p)            reinterpret_cast<T>(p)                       // Cast to T

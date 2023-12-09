@@ -177,6 +177,8 @@ uint16_t CircularBuffer<T, nElem>::putArray(T *item, uint16_t nItem, uint16_t bS
 /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Puts Force metod
 template <class T, uint16_t nElem> uint16_t CircularBuffer<T, nElem>::putF(T item) {
+  if (isFull())
+    this->get();
   buf_[head_] = item;
   return headInc(); // old head
 }
@@ -193,6 +195,8 @@ template <class T, uint16_t nElem> uint16_t CircularBuffer<T, nElem>::putF(T *it
 template <class T, uint16_t nElem> uint16_t CircularBuffer<T, nElem>::putF(T *item, uint16_t bSize) {
   if (bSize > sizeof(T))
     return -2;
+  if (isFull())
+    this->get();
   memcpy((void *)&buf_[head_], item, bSize);
   return headInc(); // old head
 }
@@ -211,6 +215,8 @@ uint16_t CircularBuffer<T, nElem>::putFArray(T *item, uint16_t nItem, uint16_t b
     return -2;
   int ret = head_; // old head
   for (int i = 0; i < nItem; i++) {
+    if (isFull())
+      this->get();
     memcpy((void *)&buf_[head_], &item[i], bSize);
     headInc();
   }
@@ -263,7 +269,9 @@ template <class T, uint16_t nElem> inline uint16_t CircularBuffer<T, nElem>::get
 template <class T, uint16_t nElem> inline T *CircularBuffer<T, nElem>::getHeadPtr() { return &buf_[head_]; }
 template <class T, uint16_t nElem> inline T CircularBuffer<T, nElem>::readHead() const { return buf_[head_]; }
 template <class T, uint16_t nElem> inline T CircularBuffer<T, nElem>::readFromHeadIndex(uint16_t pos) {
-  uint16_t elemPos = modSub(head_, pos, real_nElem);
+  uint16_t elemPos = tail_;
+  if(pos < capacity())
+   elemPos = modSub(head_-1, pos, nElem);
   //TODO: Maybe check if over the head
   return buf_[elemPos];
 }
@@ -273,7 +281,9 @@ template <class T, uint16_t nElem> inline uint16_t CircularBuffer<T, nElem>::get
 template <class T, uint16_t nElem> inline T *CircularBuffer<T, nElem>::getTailPtr() { return &buf_[tail_]; }
 template <class T, uint16_t nElem> inline T CircularBuffer<T, nElem>::readTail() const { return this->buf_[tail_]; }
 template <class T, uint16_t nElem> inline T CircularBuffer<T, nElem>::readFromTailIndex(uint16_t pos) {
-  uint16_t elemPos = modAdd(tail_, pos, real_nElem);
+  uint16_t elemPos = head_-1;
+  if(pos < capacity())
+    elemPos = modAdd(tail_, pos, nElem);
   //TODO: Maybe check if over the head
   return buf_[elemPos];
 }

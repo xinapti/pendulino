@@ -1,6 +1,6 @@
 /* Firmware code for pendulinum */
 
-#include <ADNS3080.h>
+#include "ADNS3080/src/ADNS3080.h"
 // Include Arduino FreeRTOS library
 #include <Arduino_FreeRTOS.h>
 
@@ -11,15 +11,9 @@
 #define PIN_RESET 9
 #define PIN_CS 10
 
-// Proj Const
-#define MotionTrigger 1        //dist() res trigger
-#define pendant_diameter 0.05  // 5cm
-
 
 void (*resetFunc)(void) = 0;  //declare reset function @ address 0
 
-
-ADNS3080<PIN_RESET, PIN_CS> sensor;
 
 TaskHandle_t taskRead;
 typedef struct _sample {
@@ -37,8 +31,21 @@ typedef struct _sample {
   double rad() {
     return atan2f(dx, dy);
   }
+  void print() {
+    Serial.print("dx: ");
+    Serial.print(dx);
+    Serial.print(" dy: ");
+    Serial.print(dy);
+    Serial.print(" tSamp: ");
+    Serial.print(tSamp);
+    Serial.print(" dist(): ");
+    Serial.print(dist());
+    Serial.print(" rad(): ");
+    Serial.print(rad());
+  }
 } sample;
-CircularBuffer<sample, 100> read;
+
+
 
 enum swingPhase { Unknow,
                   MotionUp,
@@ -46,26 +53,72 @@ enum swingPhase { Unknow,
                   MotionDw,
                   SwingDw };
 
+void printPhase(swingPhase sp) {
+  switch (sp) {
+    case Unknow:
+      Serial.print("Unknow");
+      break;
+    case MotionUp:
+      Serial.print("MUp");
+      break;
+    case SwingUp:
+      Serial.print("SUp");
+      break;
+    case MotionDw:
+      Serial.print("MDw");
+      break;
+    case SwingDw:
+      Serial.print("SDw");
+      break;
+  }
+  Serial.print(" [");
+  Serial.print(sp);
+  Serial.print("]");
+}
+
 typedef struct _stateSample {
   swingPhase phase;
-  unsigned long tSet;
+  sample smp;
+  void clear() {
+    smp.clear();
+    phase = Unknow;
+  }
   void print() {
-    Serial.print("Phase: ");
-    Serial.print(phase);
-    Serial.print(" tSet: ");
-    Serial.println(tSet);
+    smp.print();
+    Serial.print(" Phase: ");
+    printPhase(phase);
   }
 } stateSample;
 
-CircularBuffer<stateSample, 10> phaseBuf;
+#define circPrint(bufCirc, elem) \
+  do { \
+    for (int i = 0; i < elem; i++) { \
+      Serial.print(i); \
+      Serial.print(") "); \
+      bufCirc.readFromHeadIndex(i).print(); \
+      Serial.println(); \
+    } \
+  } while (false);
+
+
+// Proj Const
+#define MotionTrigger 0.5      //dist() res trigger
+#define pendant_diameter 0.05  // 5cm
+ADNS3080<PIN_RESET, PIN_CS> sensor;
+
+CircularBuffer<sample, 50> read;
+CircularBuffer<stateSample, 50> phaseBuf;
 stateSample phaseCur;
+
 void setup() {
   sensor.setup();
+  sensor.writeRegister(ADNS3080_FRAME_PERIOD_LOW, 0x7E);
+  sensor.writeRegister(ADNS3080_FRAME_PERIOD_HIGH, 0x0E);
   Serial.begin(115200);
   Serial.println("Start");
   read.memClean();
   phaseCur.phase = Unknow;
-  phaseCur.tSet = 0;
+  phaseCur.smp.clear();
   phaseBuf.memClean();
 }
 
@@ -87,10 +140,14 @@ bool stateChange = false;
 sample s;
 sample sWind;
 sample h;
+stateSample s0, s1, s2, sSum;
 
 void loop() {
-  if (Serial.available())
+  if (Serial.available()) {
+    Serial.println("\n\nRESET!!!!");
+    delay(1000);
     resetFunc();
+  }
   while (millis() < s.tSamp + 1) {}
   s.tSamp = millis();
   sensor.displacement(&s.dx, &s.dy);
@@ -101,75 +158,58 @@ void loop() {
     h = read.readFromHeadIndex(i);
     sWind.dx += h.dx;
     sWind.dy += h.dy;
+    // h.print();
+    // Serial.println();
   }
-  sWind.tSamp = h.tSamp;  // Time last sample
+  sWind.tSamp = read.readFromHeadIndex(0).tSamp;  // Most recent time
+  // sWind.print();
+  // Serial.println();
+  // circPrint(read, 10);
 
   switch (phaseCur.phase) {
     case Unknow:
       if (sWind.dist() < MotionTrigger) {
         read.memClean();
         phaseBuf.memClean();
-        // lastTimeStartMotion = 0;
-        // lastTimeEndMotion = 0;
-        // lastTimeStartSwing = 0;
-        // lastTimeEndSwing = 0;
         break;
       }
       phaseCur.phase = MotionUp;
-      phaseCur.tSet = sWind.tSamp;
+      phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
       stateChange = true;
-      // lastTimeStartMotion = sWind.tSamp;
-      // lastTimeEndMotion = 0;
-      // lastTimeStartSwing = 0;
-      // lastTimeEndSwing = 0;
       break;
     case MotionUp:
-      //TODO: fare funzione distanza e mettere dP maggiore di 1 per movimento
       if (sWind.dist() > MotionTrigger)
         break;
       phaseCur.phase = SwingUp;
-      phaseCur.tSet = sWind.tSamp;
+      phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
       stateChange = true;
-      // lastTimeStartSwing = sWind.tSamp;
       break;
     case SwingUp:
-      //TODO: fare funzione distanza e mettere dP minore di 1 per movimento
       if (sWind.dist() <= MotionTrigger)
         break;
-      // state = MotionDw;
       phaseCur.phase = MotionDw;
-      phaseCur.tSet = s.tSamp;
+      phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
       stateChange = true;
-      // lastTimeEndSwing = s.tSamp;
-      // lastTimeStartMotion = s.tSamp;
       break;
     case MotionDw:
-      //TODO: fare funzione distanza e mettere dP maggiore di 1 per movimento
+      //Serial.println("mDw");
       if (sWind.dist() > MotionTrigger)
         break;
       phaseCur.phase = SwingDw;
-      phaseCur.tSet = sWind.tSamp;
+      phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
       stateChange = true;
-
-      // lastTimeEndMotion = sWind.tSamp;
-      // lastTimeStartSwing = sWind.tSamp;
       break;
     case SwingDw:
-      //TODO: fare funzione distanza e mettere dP minore di 1 per movimento
       if (sWind.dist() <= MotionTrigger)
         break;
       phaseCur.phase = MotionUp;
-      phaseCur.tSet = s.tSamp;
+      phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
       stateChange = true;
-
-      // state = MotionUp;
-      // lastTimeEndSwing = s.tSamp;
-      // lastTimeStartMotion = s.tSamp;
       break;
     default:
       phaseCur.phase = Unknow;
@@ -179,55 +219,47 @@ void loop() {
   if (stateChange) {
     stateChange = false;
     //enum swingPhase { Unknow, MotionUp, SwingUp, MotionDw, SwingDw };
-    // Serial.print("sWind.dx: ");
-    // Serial.print(sWind.dx);
-    // Serial.print(" sWind.dy: ");
-    // Serial.print(sWind.dy);
-    // Serial.print(" sWind.dist(): ");
-    // Serial.print(sWind.dist());
+    // sWind.print();
     // Serial.print("; Currente Phase: ");
-    // Serial.print(phaseCur.phase);
-    // Serial.print("  detect ");
-    stateSample s0, s1, s2, s3;
+    // phaseCur.print();
     switch (phaseCur.phase) {
       case Unknow:
-        Serial.println("Unknow");
         break;
       case SwingUp:
         //dt_motion = lastTimeEndMotion - lastTimeStartMotion;
         s0 = phaseBuf.readFromHeadIndex(0);
         s1 = phaseBuf.readFromHeadIndex(1);
         s2 = phaseBuf.readFromHeadIndex(2);
-        s3 = phaseBuf.readFromHeadIndex(3);
-        phaseCur.print();
-        s0.print();
-        s1.print();
-        s2.print();
-        s3.print();
-        Serial.println();
-        dt_motion = s0.tSet - s1.tSet;
-        dt_halfSwing = s1.tSet - s2.tSet;
-        deg = sWind.rad();
-        vel = (pendant_diameter * 100) / (1000 * dt_motion);  // 2cm Diametro rondella
+        dt_motion = s0.smp.tSamp - s1.smp.tSamp;
+        dt_halfSwing = s1.smp.tSamp - s2.smp.tSamp;
+        sSum.clear();
+        sSum = s1;
+        for (int i = 1; i < 10; i++) {
+          s0 = phaseBuf.readFromHeadIndex(i * 4);
+          sSum.smp.dx += s0.smp.dx;
+          sSum.smp.dy += s0.smp.dy;
+        }
+        deg = sSum.smp.rad();
+        vel = (pendant_diameter * 100.0) / (1.0 * (double)dt_motion);
+        sSum.print();
+        Serial.print("  dt_halfSwing: ");
+        Serial.print(dt_halfSwing);
+        Serial.print(" (");
+        Serial.print(deg);
+        Serial.print(" °)");
 
-        // Serial.print("  dt_halfSwing: ");
-        // Serial.print(dt_halfSwing);
-        // Serial.print(" (");
-        // Serial.print(deg);
-        // Serial.print(" °)");
-
-        // Serial.print("  dt_motion: ");
-        // Serial.print(dt_motion);
-        // Serial.print(" (");
-        // Serial.print(vel);
-        // Serial.println(" cm/s)");
+        Serial.print("  dt_motion: ");
+        Serial.print(dt_motion);
+        Serial.print(" (");
+        Serial.print(vel);
+        Serial.print(" cm/ms)");
 
         break;
       case MotionUp:
       case MotionDw:
       case SwingDw:
-        Serial.println();
         break;
     }
+    Serial.println();
   }
 }
