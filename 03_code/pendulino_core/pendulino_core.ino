@@ -1,8 +1,7 @@
 /* Firmware code for pendulinum */
-
 #include "ADNS3080/src/ADNS3080.h"
 // Include Arduino FreeRTOS library
-#include <Arduino_FreeRTOS.h>
+// #include <Arduino_FreeRTOS.h>
 
 #include <math.h>
 #include "circularBuffer/CircularBuffer.h"
@@ -15,7 +14,7 @@
 void (*resetFunc)(void) = 0;  //declare reset function @ address 0
 
 
-TaskHandle_t taskRead;
+// TaskHandle_t taskRead;
 typedef struct _sample {
   int8_t dx, dy;  // Displacement since last function call
   unsigned long tSamp;
@@ -24,6 +23,11 @@ typedef struct _sample {
     dy = 0;
     tSamp = 0;
   }
+  void add(_sample &addSmp) {
+    dx += addSmp.dx;
+    dy += addSmp.dy;
+  }
+
   double dist() {
     // Calcola la distanza euclidea utilizzando il teorema di Pitagora
     return sqrt(sq(dx) + sq(dy));
@@ -79,9 +83,11 @@ void printPhase(swingPhase sp) {
 typedef struct _stateSample {
   swingPhase phase;
   sample smp;
+  unsigned int nSmp{ 0 };
   void clear() {
     smp.clear();
     phase = Unknow;
+    nSmp = 0;
   }
   void print() {
     smp.print();
@@ -106,20 +112,29 @@ typedef struct _stateSample {
 #define pendant_diameter 0.05  // 5cm
 ADNS3080<PIN_RESET, PIN_CS> sensor;
 
-CircularBuffer<sample, 50> read;
+CircularBuffer<sample, 100> read;
 CircularBuffer<stateSample, 50> phaseBuf;
 stateSample phaseCur;
 
+
+bool stateChange = false;
+sample s;
+sample sWind;
+sample h;
+stateSample s0, s1, s2, sSum;
+
 void setup() {
+  Serial.begin(115200);
+  Serial.println("Start");
   sensor.setup();
   sensor.writeRegister(ADNS3080_FRAME_PERIOD_LOW, 0x7E);
   sensor.writeRegister(ADNS3080_FRAME_PERIOD_HIGH, 0x0E);
-  Serial.begin(115200);
-  Serial.println("Start");
   read.memClean();
   phaseCur.phase = Unknow;
   phaseCur.smp.clear();
   phaseBuf.memClean();
+  s.clear();
+  Serial.println("End Setup");
 }
 
 
@@ -132,36 +147,37 @@ unsigned long lastTimeEndSwing = 0;
 
 unsigned long dt_motion = 0;
 unsigned long dt_halfSwing = 0;
-
+unsigned long counterNoChange = 0;
 double deg = 0;
 double vel = 0;
 
-bool stateChange = false;
-sample s;
-sample sWind;
-sample h;
-stateSample s0, s1, s2, sSum;
+//TODO: Alla versione attuale misuriamo abbastanza bene la velocità con questi 40 campioni.
+// Vorremmo poter sommare tutti campioni nelle varie finestre di swing, per avere il dx e dy totale dello swing
 
 void loop() {
+
+  // Reset from terminal
   if (Serial.available()) {
     Serial.println("\n\nRESET!!!!");
     delay(1000);
     resetFunc();
   }
+  // Wait new samle moment
   while (millis() < s.tSamp + 1) {}
   s.tSamp = millis();
+
+  // Read and store the new sample
   sensor.displacement(&s.dx, &s.dy);
   read.putF(s);
 
+  // Generate current window samble and set time to most recent sample
   sWind.clear();
-  for (int i = 0; i < 10; i++) {
-    h = read.readFromHeadIndex(i);
-    sWind.dx += h.dx;
-    sWind.dy += h.dy;
-    // h.print();
-    // Serial.println();
-  }
   sWind.tSamp = read.readFromHeadIndex(0).tSamp;  // Most recent time
+  for (int i = 0; i < 40; i++) {
+    h = read.readFromHeadIndex(i);
+    sWind.add(h);
+  }
+
   // sWind.print();
   // Serial.println();
   // circPrint(read, 10);
@@ -173,6 +189,7 @@ void loop() {
         phaseBuf.memClean();
         break;
       }
+      phaseCur.clear();
       phaseCur.phase = MotionUp;
       phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
@@ -181,6 +198,7 @@ void loop() {
     case MotionUp:
       if (sWind.dist() > MotionTrigger)
         break;
+      phaseCur.clear();
       phaseCur.phase = SwingUp;
       phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
@@ -189,6 +207,7 @@ void loop() {
     case SwingUp:
       if (sWind.dist() <= MotionTrigger)
         break;
+      phaseCur.clear();
       phaseCur.phase = MotionDw;
       phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
@@ -198,6 +217,7 @@ void loop() {
       //Serial.println("mDw");
       if (sWind.dist() > MotionTrigger)
         break;
+      phaseCur.clear();
       phaseCur.phase = SwingDw;
       phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
@@ -206,13 +226,14 @@ void loop() {
     case SwingDw:
       if (sWind.dist() <= MotionTrigger)
         break;
+      phaseCur.clear();
       phaseCur.phase = MotionUp;
       phaseCur.smp = sWind;
       phaseBuf.putF(phaseCur);
       stateChange = true;
       break;
     default:
-      phaseCur.phase = Unknow;
+      phaseCur.clear();
       break;
   }
 
@@ -222,6 +243,7 @@ void loop() {
     // sWind.print();
     // Serial.print("; Currente Phase: ");
     // phaseCur.print();
+    counterNoChange = 0;
     switch (phaseCur.phase) {
       case Unknow:
         break;
@@ -232,15 +254,17 @@ void loop() {
         s2 = phaseBuf.readFromHeadIndex(2);
         dt_motion = s0.smp.tSamp - s1.smp.tSamp;
         dt_halfSwing = s1.smp.tSamp - s2.smp.tSamp;
+        vel = (pendant_diameter * 100.0) / (0.001 * (double)dt_motion);
+        // Calcolo angolo su ultimi 10 stati
         sSum.clear();
         sSum = s1;
-        for (int i = 1; i < 10; i++) {
+        for (int i = 0; i < 10; i++) {
           s0 = phaseBuf.readFromHeadIndex(i * 4);
           sSum.smp.dx += s0.smp.dx;
           sSum.smp.dy += s0.smp.dy;
         }
         deg = sSum.smp.rad();
-        vel = (pendant_diameter * 100.0) / (1.0 * (double)dt_motion);
+
         sSum.print();
         Serial.print("  dt_halfSwing: ");
         Serial.print(dt_halfSwing);
@@ -252,14 +276,23 @@ void loop() {
         Serial.print(dt_motion);
         Serial.print(" (");
         Serial.print(vel);
-        Serial.print(" cm/ms)");
-
+        Serial.print(" cm/s)");
         break;
       case MotionUp:
       case MotionDw:
       case SwingDw:
+        printPhase(phaseCur.phase);
+        Serial.print(" nSmp: ");
+        Serial.print(phaseCur.nSmp);
         break;
     }
     Serial.println();
+  } else {
+    phaseCur.nSmp++;
+    counterNoChange++;
+    if (counterNoChange > 10000) {
+      Serial.println("No status change detect for 10000 iteration!");
+      counterNoChange = 0;
+    }
   }
 }
