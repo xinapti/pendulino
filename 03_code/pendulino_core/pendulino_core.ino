@@ -7,8 +7,10 @@
 #include "circularBuffer/CircularBuffer.h"
 
 // SPI pins:
-#define PIN_RESET 9
-#define PIN_CS 10
+#define PIN_RESET 26
+#define PIN_CS 5
+
+#define tSampleMillis 1
 
 
 void (*resetFunc)(void) = 0;  //declare reset function @ address 0
@@ -112,12 +114,11 @@ typedef struct _stateSample {
 #define pendant_diameter 0.05  // 5cm
 ADNS3080<PIN_RESET, PIN_CS> sensor;
 
-CircularBuffer<sample, 100> readBuf;
+CircularBuffer<sample, 10000> readBuf;
 CircularBuffer<stateSample, 50> phaseBuf;
 stateSample phaseCur;
 
 
-bool stateChange = false;
 sample s;
 sample sWind;
 sample h;
@@ -140,11 +141,6 @@ void setup() {
 
 
 // Initial position
-unsigned long lastTimeStartMotion = 0;
-unsigned long lastTimeEndMotion = 0;
-unsigned long lastTimeStartSwing = 0;
-unsigned long lastTimeEndSwing = 0;
-
 unsigned long dt_motion = 0;
 unsigned long dt_halfSwing = 0;
 unsigned long counterNoChange = 0;
@@ -163,17 +159,17 @@ void loop() {
     resetFunc();
   }
   // Wait new samle moment
-  while (millis() < s.tSamp + 1) {}
+  while (millis() < s.tSamp + tSampleMillis) {}
   s.tSamp = millis();
 
   // Read and store the new sample
   sensor.displacement(&s.dx, &s.dy);
   readBuf.putF(s);
 
-  // Generate current window samble and set time to most recent sample
+  // Generate current decision window samble sum, and set time to most recent sample
   sWind.clear();
   sWind.tSamp = readBuf.readFromHeadIndex(0).tSamp;  // Most recent time
-  for (int i = 0; i < 40; i++) {
+  for (int i = 0; i < 100; i++) {
     h = readBuf.readFromHeadIndex(i);
     sWind.add(h);
   }
@@ -182,6 +178,68 @@ void loop() {
   // Serial.println();
   // circPrint(read, 10);
 
+
+  if (phaseUpdate()) {
+    //enum swingPhase { Unknow, MotionUp, SwingUp, MotionDw, SwingDw };
+    // sWind.print();
+    // Serial.print("; Currente Phase: ");
+    // phaseCur.print();
+    counterNoChange = 0;
+    switch (phaseCur.phase) {
+      case Unknow:
+        break;
+      case SwingUp:
+        s0 = phaseBuf.readFromHeadIndex(0);
+        s1 = phaseBuf.readFromHeadIndex(1);
+        s2 = phaseBuf.readFromHeadIndex(2);
+        dt_motion = s0.smp.tSamp - s1.smp.tSamp;
+        dt_halfSwing = s1.smp.tSamp - s2.smp.tSamp;
+        vel = (pendant_diameter * 100.0) / (0.001 * (double)dt_motion);
+        // Calcolo angolo su ultimi 10 stati
+        sSum.clear();
+        sSum = s1;
+        for (int i = 0; i < 10; i++) {
+          s0 = phaseBuf.readFromHeadIndex(i * 4);
+          sSum.smp.dx += s0.smp.dx;
+          sSum.smp.dy += s0.smp.dy;
+        }
+        deg = sSum.smp.rad();
+
+        sSum.print();
+        Serial.print("  dt_halfSwing: ");
+        Serial.print(dt_halfSwing);
+        Serial.print(" (");
+        Serial.print(deg);
+        Serial.print(" °)");
+
+        Serial.print("  dt_motion: ");
+        Serial.print(dt_motion);
+        Serial.print(" (");
+        Serial.print(vel);
+        Serial.print(" cm/s)");
+        break;
+      case MotionUp:
+      case MotionDw:
+      case SwingDw:
+        printPhase(phaseCur.phase);
+        Serial.print(" nSmp: ");
+        Serial.print(phaseCur.nSmp);
+        break;
+    }
+    Serial.println();
+  } else {
+    phaseCur.nSmp++;
+    counterNoChange++;
+    if (counterNoChange > 10000) {
+      Serial.println("No status change detect for 10000 iteration!");
+      counterNoChange = 0;
+    }
+  }
+}
+
+
+bool phaseUpdate() {
+  bool stateChange = false;
   switch (phaseCur.phase) {
     case Unknow:
       if (sWind.dist() < MotionTrigger) {
@@ -236,63 +294,5 @@ void loop() {
       phaseCur.clear();
       break;
   }
-
-  if (stateChange) {
-    stateChange = false;
-    //enum swingPhase { Unknow, MotionUp, SwingUp, MotionDw, SwingDw };
-    // sWind.print();
-    // Serial.print("; Currente Phase: ");
-    // phaseCur.print();
-    counterNoChange = 0;
-    switch (phaseCur.phase) {
-      case Unknow:
-        break;
-      case SwingUp:
-        //dt_motion = lastTimeEndMotion - lastTimeStartMotion;
-        s0 = phaseBuf.readFromHeadIndex(0);
-        s1 = phaseBuf.readFromHeadIndex(1);
-        s2 = phaseBuf.readFromHeadIndex(2);
-        dt_motion = s0.smp.tSamp - s1.smp.tSamp;
-        dt_halfSwing = s1.smp.tSamp - s2.smp.tSamp;
-        vel = (pendant_diameter * 100.0) / (0.001 * (double)dt_motion);
-        // Calcolo angolo su ultimi 10 stati
-        sSum.clear();
-        sSum = s1;
-        for (int i = 0; i < 10; i++) {
-          s0 = phaseBuf.readFromHeadIndex(i * 4);
-          sSum.smp.dx += s0.smp.dx;
-          sSum.smp.dy += s0.smp.dy;
-        }
-        deg = sSum.smp.rad();
-
-        sSum.print();
-        Serial.print("  dt_halfSwing: ");
-        Serial.print(dt_halfSwing);
-        Serial.print(" (");
-        Serial.print(deg);
-        Serial.print(" °)");
-
-        Serial.print("  dt_motion: ");
-        Serial.print(dt_motion);
-        Serial.print(" (");
-        Serial.print(vel);
-        Serial.print(" cm/s)");
-        break;
-      case MotionUp:
-      case MotionDw:
-      case SwingDw:
-        printPhase(phaseCur.phase);
-        Serial.print(" nSmp: ");
-        Serial.print(phaseCur.nSmp);
-        break;
-    }
-    Serial.println();
-  } else {
-    phaseCur.nSmp++;
-    counterNoChange++;
-    if (counterNoChange > 10000) {
-      Serial.println("No status change detect for 10000 iteration!");
-      counterNoChange = 0;
-    }
-  }
+  return stateChange;
 }
