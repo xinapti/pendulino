@@ -112,7 +112,7 @@ typedef struct _stateSample {
 #define pendant_diameter 0.05  // 5cm
 ADNS3080<PIN_RESET, PIN_CS> sensor;
 
-CircularBuffer<sample, 100> read;
+CircularBuffer<sample, 100> readBuf;
 CircularBuffer<stateSample, 50> phaseBuf;
 stateSample phaseCur;
 
@@ -129,7 +129,7 @@ void setup() {
   sensor.setup();
   sensor.writeRegister(ADNS3080_FRAME_PERIOD_LOW, 0x7E);
   sensor.writeRegister(ADNS3080_FRAME_PERIOD_HIGH, 0x0E);
-  read.memClean();
+  readBuf.memClean();
   phaseCur.phase = Unknow;
   phaseCur.smp.clear();
   phaseBuf.memClean();
@@ -168,13 +168,13 @@ void loop() {
 
   // Read and store the new sample
   sensor.displacement(&s.dx, &s.dy);
-  read.putF(s);
+  readBuf.putF(s);
 
   // Generate current window samble and set time to most recent sample
   sWind.clear();
-  sWind.tSamp = read.readFromHeadIndex(0).tSamp;  // Most recent time
+  sWind.tSamp = readBuf.readFromHeadIndex(0).tSamp;  // Most recent time
   for (int i = 0; i < 40; i++) {
-    h = read.readFromHeadIndex(i);
+    h = readBuf.readFromHeadIndex(i);
     sWind.add(h);
   }
 
@@ -185,7 +185,7 @@ void loop() {
   switch (phaseCur.phase) {
     case Unknow:
       if (sWind.dist() < MotionTrigger) {
-        read.memClean();
+        readBuf.memClean();
         phaseBuf.memClean();
         break;
       }
