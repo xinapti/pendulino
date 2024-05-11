@@ -11,7 +11,7 @@ g=9.81; % Gravità [m/s^2]
 
 %Sim Cond
 y0 = [deg2rad(degStart);0]; % Start Condition (Theta, Omega)
-frameRate=20; % Frame per Secondo [1/s]
+frameRate=30; % Frame per Secondo [1/s]
 
 % Control para
 Theta_Ref_max = deg2rad(30);

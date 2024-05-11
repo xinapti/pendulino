@@ -9,7 +9,7 @@ degStart = 50;  % Angolo di partenza [deg]
 
 
 % Sim param
-frameRate=20; % Frame per Secondo [1/s]
+frameRate=50; % Frame per Secondo [1/s]
 simTime = 20; % Secondi di simulazione [s]
 t_span = 0:1/frameRate:simTime;
 
