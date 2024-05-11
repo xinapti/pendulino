@@ -6,98 +6,16 @@
 #include <math.h>
 #include "circularBuffer/CircularBuffer.h"
 
-// SPI pins:
-#define PIN_RESET 26
-#define PIN_CS 5
+#include "dataDefine.h"
 
+// Proj Const
+#define MotionTrigger 0.5      //dist() res trigger
+#define pendant_diameter 0.05  // 5cm
 #define tSampleMillis 1
-
 
 void (*resetFunc)(void) = 0;  //declare reset function @ address 0
 
-
-// TaskHandle_t taskRead;
-typedef struct _sample {
-  int8_t dx, dy;  // Displacement since last function call
-  unsigned long tSamp;
-  void clear() {
-    dx = 0;
-    dy = 0;
-    tSamp = 0;
-  }
-  void add(_sample &addSmp) {
-    dx += addSmp.dx;
-    dy += addSmp.dy;
-  }
-
-  double dist() {
-    // Calcola la distanza euclidea utilizzando il teorema di Pitagora
-    return sqrt(sq(dx) + sq(dy));
-  }
-  double rad() {
-    return atan2f(dx, dy);
-  }
-  void print() {
-    Serial.print("dx: ");
-    Serial.print(dx);
-    Serial.print(" dy: ");
-    Serial.print(dy);
-    Serial.print(" tSamp: ");
-    Serial.print(tSamp);
-    Serial.print(" dist(): ");
-    Serial.print(dist());
-    Serial.print(" rad(): ");
-    Serial.print(rad());
-  }
-} sample;
-
-
-
-enum swingPhase { Unknow,
-                  MotionUp,
-                  SwingUp,
-                  MotionDw,
-                  SwingDw };
-
-void printPhase(swingPhase sp) {
-  switch (sp) {
-    case Unknow:
-      Serial.print("Unknow");
-      break;
-    case MotionUp:
-      Serial.print("MUp");
-      break;
-    case SwingUp:
-      Serial.print("SUp");
-      break;
-    case MotionDw:
-      Serial.print("MDw");
-      break;
-    case SwingDw:
-      Serial.print("SDw");
-      break;
-  }
-  Serial.print(" [");
-  Serial.print(sp);
-  Serial.print("]");
-}
-
-typedef struct _stateSample {
-  swingPhase phase;
-  sample smp;
-  unsigned int nSmp{ 0 };
-  void clear() {
-    smp.clear();
-    phase = Unknow;
-    nSmp = 0;
-  }
-  void print() {
-    smp.print();
-    Serial.print(" Phase: ");
-    printPhase(phase);
-  }
-} stateSample;
-
+// Print 0->elem item in circular buffer, use for debug
 #define circPrint(bufCirc, elem) \
   do { \
     for (int i = 0; i < elem; i++) { \
@@ -109,97 +27,58 @@ typedef struct _stateSample {
   } while (false);
 
 
-// Proj Const
-#define MotionTrigger 0.5      //dist() res trigger
-#define pendant_diameter 0.05  // 5cm
-ADNS3080<PIN_RESET, PIN_CS> sensor;
-
-CircularBuffer<sample, 10000> readBuf;
-CircularBuffer<stateSample, 50> phaseBuf;
-stateSample phaseCur;
-
-
-sample s;
-sample sWind;
-sample h;
-stateSample s0, s1, s2, sSum;
-
 void setup() {
   Serial.begin(115200);
   Serial.println("Start");
-  sensor.setup();
-  sensor.writeRegister(ADNS3080_FRAME_PERIOD_LOW, 0x7E);
-  sensor.writeRegister(ADNS3080_FRAME_PERIOD_HIGH, 0x0E);
-  readBuf.memClean();
-  phaseCur.phase = Unknow;
-  phaseCur.smp.clear();
-  phaseBuf.memClean();
-  s.clear();
+  init_readSubSystem();
+  init_phaseMngSubSystem();
   Serial.println("End Setup");
 }
 
 
-
+unsigned long counterNoChange = 0;
 // Initial position
 unsigned long dt_motion = 0;
 unsigned long dt_halfSwing = 0;
-unsigned long counterNoChange = 0;
 double deg = 0;
 double vel = 0;
 
 //TODO: Alla versione attuale misuriamo abbastanza bene la velocità con questi 40 campioni.
 // Vorremmo poter sommare tutti campioni nelle varie finestre di swing, per avere il dx e dy totale dello swing
-
+stateSample s0, s1, s2, sSum;
+sample sWind;
 void loop() {
-
   // Reset from terminal
   if (Serial.available()) {
     Serial.println("\n\nRESET!!!!");
     delay(1000);
     resetFunc();
   }
-  // Wait new samle moment
-  while (millis() < s.tSamp + tSampleMillis) {}
-  s.tSamp = millis();
-
-  // Read and store the new sample
-  sensor.displacement(&s.dx, &s.dy);
-  readBuf.putF(s);
-
-  // Generate current decision window samble sum, and set time to most recent sample
-  sWind.clear();
-  sWind.tSamp = readBuf.readFromHeadIndex(0).tSamp;  // Most recent time
-  for (int i = 0; i < 100; i++) {
-    h = readBuf.readFromHeadIndex(i);
-    sWind.add(h);
-  }
-
-  // sWind.print();
-  // Serial.println();
-  // circPrint(read, 10);
-
-
-  if (phaseUpdate()) {
-    //enum swingPhase { Unknow, MotionUp, SwingUp, MotionDw, SwingDw };
-    // sWind.print();
-    // Serial.print("; Currente Phase: ");
-    // phaseCur.print();
+  // Execute new read
+  waitNextSample(tSampleMillis);
+  cumulativeMove(&sWind, 100);
+  // State update
+  if (phaseUpdate(&sWind)) {
     counterNoChange = 0;
+    stateSample phaseCur;
+    getState(phaseCur, 0);
+
     switch (phaseCur.phase) {
       case Unknow:
         break;
       case SwingUp:
-        s0 = phaseBuf.readFromHeadIndex(0);
-        s1 = phaseBuf.readFromHeadIndex(1);
-        s2 = phaseBuf.readFromHeadIndex(2);
+        getState(s0, 0);
+        getState(s1, 1);
+        getState(s2, 2);
         dt_motion = s0.smp.tSamp - s1.smp.tSamp;
         dt_halfSwing = s1.smp.tSamp - s2.smp.tSamp;
         vel = (pendant_diameter * 100.0) / (0.001 * (double)dt_motion);
         // Calcolo angolo su ultimi 10 stati
+        // TODO: Modificare, meglio vedere tutti i sample di questo stato
         sSum.clear();
         sSum = s1;
         for (int i = 0; i < 10; i++) {
-          s0 = phaseBuf.readFromHeadIndex(i * 4);
+          getState(s0, i * 4);
           sSum.smp.dx += s0.smp.dx;
           sSum.smp.dy += s0.smp.dy;
         }
@@ -222,13 +101,10 @@ void loop() {
       case MotionDw:
       case SwingDw:
         printPhase(phaseCur.phase);
-        Serial.print(" nSmp: ");
-        Serial.print(phaseCur.nSmp);
         break;
     }
     Serial.println();
   } else {
-    phaseCur.nSmp++;
     counterNoChange++;
     if (counterNoChange > 10000) {
       Serial.println("No status change detect for 10000 iteration!");
@@ -238,61 +114,60 @@ void loop() {
 }
 
 
-bool phaseUpdate() {
+bool phaseUpdate(sample *decisionWindows) {
+  //TODO: modificare la logica, quando il trigger è raggiunto .smp deve
+  //      diventare la sommatoria degli spostamenti letti dall'ultimo stato ad ora
   bool stateChange = false;
-  switch (phaseCur.phase) {
+  stateSample newState;
+  newState.clear();
+
+  stateSample nowPhase;
+  getState(nowPhase, 0);
+
+  switch (nowPhase.phase) {
     case Unknow:
-      if (sWind.dist() < MotionTrigger) {
-        readBuf.memClean();
-        phaseBuf.memClean();
+      if (decisionWindows->dist() < MotionTrigger) {
+        restart_readSubSystem();
         break;
       }
-      phaseCur.clear();
-      phaseCur.phase = MotionUp;
-      phaseCur.smp = sWind;
-      phaseBuf.putF(phaseCur);
+      newState.phase = MotionUp;
+      newState.smp = *decisionWindows;
       stateChange = true;
       break;
     case MotionUp:
-      if (sWind.dist() > MotionTrigger)
+      if (decisionWindows->dist() > MotionTrigger)
         break;
-      phaseCur.clear();
-      phaseCur.phase = SwingUp;
-      phaseCur.smp = sWind;
-      phaseBuf.putF(phaseCur);
+      newState.phase = SwingUp;
+      newState.smp = *decisionWindows;
       stateChange = true;
       break;
     case SwingUp:
-      if (sWind.dist() <= MotionTrigger)
+      if (decisionWindows->dist() <= MotionTrigger)
         break;
-      phaseCur.clear();
-      phaseCur.phase = MotionDw;
-      phaseCur.smp = sWind;
-      phaseBuf.putF(phaseCur);
+      newState.phase = MotionDw;
+      newState.smp = *decisionWindows;
       stateChange = true;
       break;
     case MotionDw:
-      //Serial.println("mDw");
-      if (sWind.dist() > MotionTrigger)
+      if (decisionWindows->dist() > MotionTrigger)
         break;
-      phaseCur.clear();
-      phaseCur.phase = SwingDw;
-      phaseCur.smp = sWind;
-      phaseBuf.putF(phaseCur);
+      newState.phase = SwingDw;
+      newState.smp = *decisionWindows;
       stateChange = true;
       break;
     case SwingDw:
-      if (sWind.dist() <= MotionTrigger)
+      if (decisionWindows->dist() <= MotionTrigger)
         break;
-      phaseCur.clear();
-      phaseCur.phase = MotionUp;
-      phaseCur.smp = sWind;
-      phaseBuf.putF(phaseCur);
+      newState.phase = MotionUp;
+      newState.smp = *decisionWindows;
       stateChange = true;
       break;
     default:
-      phaseCur.clear();
       break;
   }
+  if (stateChange) {
+    storeNewState(newState);
+  }
+
   return stateChange;
 }
